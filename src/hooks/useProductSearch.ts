@@ -29,47 +29,69 @@ export function useProductSearch(
 
   const debouncedQuery = useDebounce(query, debounceMs);
   const latestRequestIdRef = useRef<number>(0);
+  const inFlightRef = useRef<boolean>(false);
 
   const setQuery = useCallback((newQuery: string) => {
-    // Invalidate any in-flight request immediately when the user modifies the search input
-    latestRequestIdRef.current += 1;
     setQueryState(newQuery);
+    setError(null);
+    setStatus((prevStatus) => (prevStatus === 'error' ? 'loading' : prevStatus));
   }, []);
 
   useEffect(() => {
+    let isCancelled = false;
     const requestId = ++latestRequestIdRef.current;
+    inFlightRef.current = true;
     setStatus('loading');
     setError(null);
 
     searchProducts(debouncedQuery)
       .then((data) => {
-        if (requestId !== latestRequestIdRef.current) {
+        if (isCancelled || requestId !== latestRequestIdRef.current) {
           return;
         }
+        inFlightRef.current = false;
         setResults(data);
         setStatus('success');
       })
       .catch((err: unknown) => {
-        if (requestId !== latestRequestIdRef.current) {
+        if (isCancelled || requestId !== latestRequestIdRef.current) {
           return;
         }
+        inFlightRef.current = false;
         const message =
           err instanceof Error ? err.message : 'An unexpected error occurred while searching.';
         setError(message);
         setStatus('error');
       });
+
+    return () => {
+      isCancelled = true;
+    };
   }, [debouncedQuery, retryTrigger]);
+
+  // If the previous request errored and the user edits the input but returns to the same
+  // debouncedQuery within the debounce window, re-trigger the search once debounce settles.
+  useEffect(() => {
+    if (query === debouncedQuery && status === 'loading' && !inFlightRef.current) {
+      const timer = setTimeout(() => {
+        setRetryTrigger((prev) => prev + 1);
+      }, debounceMs);
+      return () => clearTimeout(timer);
+    }
+  }, [query, debouncedQuery, status, debounceMs]);
 
   const retry = useCallback(() => {
     setRetryTrigger((prev) => prev + 1);
   }, []);
 
+  const isDebouncing = query !== debouncedQuery;
+
   return {
     query,
     setQuery,
     results,
-    status,
-    error,
+    status: isDebouncing ? 'loading' : status,
+    error: isDebouncing ? null : error,
     retry,
   };
 }

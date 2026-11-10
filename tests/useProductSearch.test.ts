@@ -149,4 +149,80 @@ describe('useProductSearch', () => {
     expect(result.current.error).toBeNull();
     expect(result.current.results).toEqual([productA]);
   });
+
+  it('does not drop in-flight results when the user types and backspaces back to the same query within 300ms', async () => {
+    const searchSpy = vi.spyOn(mockApi, 'searchProducts').mockImplementation((query: string) => {
+      if (query === 'wire') {
+        return new Promise<Product[]>((resolve) => {
+          setTimeout(() => resolve([productA]), 500);
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    const { result } = renderHook(() => useProductSearch('', 300));
+
+    // Flush initial mount request
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Type 'wire' and wait 300ms so the request for 'wire' (500ms latency) is dispatched
+    act(() => {
+      result.current.setQuery('wire');
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(searchSpy).toHaveBeenLastCalledWith('wire');
+
+    // While 'wire' is in-flight, user types 'wires' and backspaces to 'wire' within 300ms
+    act(() => {
+      vi.advanceTimersByTime(100);
+      result.current.setQuery('wires');
+    });
+    act(() => {
+      vi.advanceTimersByTime(100);
+      result.current.setQuery('wire');
+    });
+
+    // Advance remaining 300ms so the in-flight 'wire' request finishes
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(result.current.status).toBe('success');
+    expect(result.current.results).toEqual([productA]);
+  });
+
+  it('reports loading status during the debounce window so stale empty results are not shown mid-typing', async () => {
+    vi.spyOn(mockApi, 'searchProducts').mockImplementation((query: string) => {
+      if (query === 'wire') {
+        return Promise.resolve([productA]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const { result } = renderHook(() => useProductSearch('nomatch', 300));
+
+    // Flush initial 'nomatch' request which resolves to []
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.status).toBe('success');
+    expect(result.current.results).toEqual([]);
+
+    // User starts typing 'wire' — during the 300ms debounce window status must be 'loading'
+    act(() => {
+      result.current.setQuery('wire');
+    });
+    expect(result.current.status).toBe('loading');
+
+    // Once 300ms debounce elapses, 'wire' resolves with [productA]
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(result.current.status).toBe('success');
+    expect(result.current.results).toEqual([productA]);
+  });
 });
